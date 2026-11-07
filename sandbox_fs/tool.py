@@ -119,7 +119,7 @@ class ToolClient(object):
         env = dict(os.environ)
         env.setdefault("NO_COLOR", "1")
         env.setdefault("NODE_NO_WARNINGS", "1")
-        proc = subprocess.run(argv, capture_output=True, timeout=timeout, env=env, **kw)
+        proc = subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
         out = proc.stdout.decode("utf-8", "replace")
         err = proc.stderr.decode("utf-8", "replace")
         result = CliResult(proc.returncode, out, err, argv)
@@ -142,7 +142,7 @@ class ToolClient(object):
         out = r.out.strip()
         # CLI 会先回显 "$ <command>"，从结果里去掉首行
         lines = out.splitlines()
-        if lines and lines[0].lstrip("$ ").strip() == command.strip():
+        if lines and lines[0].startswith("$ ") and lines[0][2:].strip() == command.strip():
             lines = lines[1:]
         return "\n".join(lines).strip()
 

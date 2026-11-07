@@ -411,7 +411,10 @@ class Channel(object):
             return None
         key = hashlib.sha1(("%s|%s" % (self.sandbox, self.root)).encode()).hexdigest()[:16]
         path = os.path.join(require_tmpdir(), "sandbox_fs-%s.lock" % key)
-        fh = open(path, "w")
+        try:
+            fh = open(path, "w")
+        except OSError:
+            return None
         deadline = time.time() + timeout
         while True:
             try:
@@ -439,6 +442,7 @@ class Channel(object):
             except Exception:  # noqa: BLE001
                 try:
                     p.kill()
+                    p.wait(timeout=3)
                 except Exception:  # noqa: BLE001
                     pass
 

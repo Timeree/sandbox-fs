@@ -514,16 +514,14 @@ def make_handler(fs, user=None, password=None, anonymous=True):
 def _local_placeholder():
     """一个本地真实存在、只用于通过 pyftpdlib 家目录校验的目录。"""
 
-    for path in (os.path.expanduser("~/.sandbox_fs-ftp-root"),):
-        try:
-            os.makedirs(path, exist_ok=True)
-            if os.path.isdir(path):
-                return path
-        except OSError:
-            continue
-    import tempfile
+    try:
+        path = os.path.expanduser("~/.sandbox_fs-ftp-root")
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        import tempfile
 
-    return tempfile.mkdtemp(prefix="sandbox_fs-ftp-")
+        return tempfile.mkdtemp(prefix="sandbox_fs-ftp-")
 
 
 def serve_ftp(fs, host="0.0.0.0", port=2121, user=None, password=None,
@@ -541,9 +539,8 @@ def serve_ftp(fs, host="0.0.0.0", port=2121, user=None, password=None,
     except OSError as exc:
         if exc.errno in (errno.EADDRINUSE, errno.EACCES):
             raise RuntimeError(
-                "无法监听 %s:%d（%s）。该端口可能已有 sandbox_fs FTP 在运行；"
-                "停止请 kill $(cat /tmp/sandbox_fs-ftp-%d.pid)"
-                % (host, port, exc.strerror or exc, port))
+                "无法监听 %s:%d（%s）。该端口可能已有 sandbox_fs FTP 在运行"
+                % (host, port, exc.strerror or exc))
         raise
     if log:
         log("FTP 就绪：ftp://%s:%d  (根=%s)" % (host, port, fs.root))

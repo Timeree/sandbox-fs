@@ -50,10 +50,9 @@ def write_all(fd, blob, timeout=30.0):
     """
 
     import select
-    import time as _t
 
     view = memoryview(blob)
-    deadline = _t.time() + timeout
+    deadline = time.time() + timeout
     while view:
         try:
             n = os.write(fd, view)
@@ -63,7 +62,7 @@ def write_all(fd, blob, timeout=30.0):
             pass
         except InterruptedError:
             continue
-        left = deadline - _t.time()
+        left = deadline - time.time()
         if left <= 0:
             raise OSError(11, "pty write timeout")
         try:
@@ -224,13 +223,20 @@ def op_write_b64(conn, rid, req):
     data = base64.b64decode(req["data"])
     mode = req.get("mode")
     tmp = "%s.sandbox_fs-tmp-%d" % (path, os.getpid())
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    if mode is not None:
-        os.chmod(tmp, int(mode))
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp, int(mode))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     st = os.stat(path)
     return {"size": st.st_size, "mtime": int(st.st_mtime), "path": path}
 
@@ -257,8 +263,6 @@ def op_rmtree(conn, rid, req):
 def op_mkdir(conn, rid, req):
     for item in req.get("dirs") or []:
         os.mkdir(item[0], item[1] if len(item) > 1 else 0o777)
-        if len(item) > 2 and item[2]:
-            os.chmod(item[0], item[2])
     return {}
 
 
@@ -506,6 +510,11 @@ class Daemon(object):
                 os.close(fd)
             except OSError:
                 pass
+            if tmp:  # 半成品临时文件同样清掉，与 on_detach 的清理一致
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
             conn.res(rid, 0, errno=exc.errno or errno.EIO, msg=str(exc))
 
 

@@ -17,6 +17,7 @@ from __future__ import absolute_import, unicode_literals
 
 import argparse
 import sys
+import time
 
 from . import __version__, connect
 from .errors import SandboxFsError
@@ -321,7 +322,7 @@ def _doctor(fs, args):
     check("沙箱状态", ls)
     check("连接与握手", lambda: "worker pid=%s, 往返 %.0fms"
           % (fs.chan.worker_pid, _roundtrip(fs)))
-    check("FTP 依赖", lambda: __import__("pyftpdlib").__ver__)
+    check("FTP 依赖", lambda: _pyftpdlib_ver())
 
     print()
     if ok:
@@ -339,17 +340,22 @@ def _raise(msg):
     raise RuntimeError(msg)
 
 
-def _roundtrip(fs):
-    import time as _t
+def _pyftpdlib_ver():
+    try:
+        return __import__("pyftpdlib").__ver__
+    except AttributeError:
+        from importlib.metadata import version
 
-    t0 = _t.time()
+        return version("pyftpdlib")
+
+
+def _roundtrip(fs):
+    t0 = time.time()
     fs.ping()
-    return (_t.time() - t0) * 1000
+    return (time.time() - t0) * 1000
 
 
 def _fmt_time(ts):
-    import time
-
     try:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
     except (ValueError, OSError):

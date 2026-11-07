@@ -53,7 +53,6 @@ def make_raw(fd=0):
     except ImportError:
         pass
     try:
-        import struct
         import termios
         import tty
 
@@ -70,7 +69,6 @@ def make_raw(fd=0):
                 termios.tcsetattr(target, termios.TCSANOW, attrs)
             except (OSError, ValueError):
                 pass
-        del struct
     except (ImportError, OSError, ValueError):
         pass
 
@@ -89,8 +87,12 @@ def write_all(fd, blob):
         view = view[n:]
 
 
-def read_frame(fd, buf, tmo=180.0):
-    """从 fd 读一帧；返回 (type, flags, data, payload) 或 None(EOF)。"""
+def read_frame(fd, buf):
+    """从 fd 读一帧；返回 (type, flags, data, payload)，EOF 返回 None。
+
+    坏帧（JSON 解析失败、len 越界）视为脏数据跳过并继续对齐，
+    不会中断读循环——只有 EOF（通道关闭）才返回 None。
+    """
 
     def need(n):
         nonlocal buf
@@ -120,25 +122,25 @@ def read_frame(fd, buf, tmo=180.0):
         if head is None:
             return None
         magic, type_, flags, hlen = HDR.unpack(head)
-        if magic == MAGIC and 0 <= hlen <= MAX_HEADER:
-            break
-        buf[:0] = head[1:]
-    raw = need(hlen)
-    if raw is None:
-        return None
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except ValueError:
-        return None
-    plen = int(data.get("len", 0) or 0)
-    if plen < 0 or plen > MAX_PAYLOAD:
-        return None
-    payload = b""
-    if plen:
-        payload = need(plen)
-        if payload is None:
+        if magic != MAGIC or not 0 <= hlen <= MAX_HEADER:
+            buf[:0] = head[1:]
+            continue
+        raw = need(hlen)
+        if raw is None:
             return None
-    return type_, flags, data, payload
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            continue          # 坏头：跳过整帧继续对齐
+        plen = int(data.get("len", 0) or 0)
+        if plen < 0 or plen > MAX_PAYLOAD:
+            continue          # 载荷长度非法：跳过整帧
+        payload = b""
+        if plen:
+            payload = need(plen)
+            if payload is None:
+                return None
+        return type_, flags, data, payload
 
 
 def frame_bytes(type_, data, payload=b"", flags=F_END):
@@ -201,9 +203,9 @@ def main(root=None):
         payload = None
         deadline = time.time() + 300
         while time.time() < deadline and payload is None:
-            fr = read_frame(0, buf, HEARTBEAT)
+            fr = read_frame(0, buf)
             if fr is None:
-                continue
+                break
             _t, _f, data, body = fr
             op = data.get("op")
             if op == "get":
@@ -221,7 +223,6 @@ def main(root=None):
 
     if payload is None:
         return 3
-
     mod = types.ModuleType("sandbox_fs_worker")
     mod.__file__ = "<sandbox_fs-worker>"
     sys.modules["sandbox_fs_worker"] = mod
