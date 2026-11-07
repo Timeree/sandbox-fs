@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sandbox-fs"
+version = "1.1.0"
+description = "Remote sandbox file system bridge: POSIX-style Python API, CLI and optional FTP, over a WebSocket channel with a custom frame protocol (SBOX)."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["sandbox", "filesystem", "ftp", "websocket", "remote", "bridge"]
+authors = [{ name = "Codespace Project" }]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: System :: Filesystems",
+  "Topic :: Communications :: File Transfer",
+]
+
+[project.optional-dependencies]
+ftp = ["pyftpdlib>=1.5"]
+
+[project.scripts]
+sandbox-fs = "sandbox_fs.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/TimereeOrg/Codespace/tree/main/oc/sandbox-fs"
+Repository = "https://github.com/TimereeOrg/Codespace/tree/main/oc/sandbox-fs"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["sandbox_fs*"]
+
+[tool.setuptools.package-data]
+sandbox_fs = ["bridge.mjs"]
