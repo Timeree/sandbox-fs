@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 sandbox CLI 封装：沙箱生命周期、登录状态、批量文件拷贝。
 
@@ -11,7 +10,6 @@ sandbox CLI 封装：沙箱生命周期、登录状态、批量文件拷贝。
 高频的小操作一律走 :class:`sandbox_fs.transport.Channel`（常驻 worker）。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import errno
 import os

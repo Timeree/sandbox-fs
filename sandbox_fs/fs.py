@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 文件系统层：把帧协议翻译成 POSIX 风格的文件操作。
 
@@ -15,7 +14,6 @@
 * 超出单帧上限的写入自动转 ``sandbox cp``（大文件批量最稳）。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import base64
 import errno
@@ -147,6 +145,11 @@ class FileSystem(object):
             path = posixpath.join(base, path)
         return posixpath.normpath(path)
 
+    def _abs(self, path, allow_root=False):
+        """解析相对路径并做越界检查，返回规范化的沙箱绝对路径。"""
+
+        return self._check(self.abspath(path), allow_root=allow_root)
+
     def _check(self, spath, allow_root=False):
         """越界检查：默认只允许 root 及其子树（``allow_root=False`` 时禁止根本身）。
 
@@ -174,7 +177,7 @@ class FileSystem(object):
     # 元数据
     # ------------------------------------------------------------------
     def stat(self, path, follow=False):
-        spath = self._check(self.abspath(path), allow_root=True)
+        spath = self._abs(path, allow_root=True)
         return Entry(self.chan.call("stat", path=spath, follow=bool(follow)).data)
 
     def lstat(self, path):
@@ -184,7 +187,7 @@ class FileSystem(object):
         return self.exists_many([path])[0]
 
     def exists_many(self, paths):
-        abspaths = [self._check(self.abspath(p), allow_root=True) for p in paths]
+        abspaths = [self._abs(p, allow_root=True) for p in paths]
         resp = self.chan.call("exists", paths=abspaths)
         kinds = resp.data.get("kinds") or {}
         return [kinds.get(p) for p in abspaths]
@@ -212,7 +215,7 @@ class FileSystem(object):
         return self.lstat(path).mtime
 
     def listdir(self, path="."):
-        spath = self._check(self.abspath(path), allow_root=True)
+        spath = self._abs(path, allow_root=True)
         resp = self.chan.call("list", path=spath)
         return [Entry(e, parent=spath) for e in resp.data.get("entries") or []]
 
@@ -222,7 +225,7 @@ class FileSystem(object):
     def walk(self, path="."):
         """递归遍历，产出 ``(dirpath, dirs, files)``，路径都是沙箱绝对路径。"""
 
-        spath = self._check(self.abspath(path), allow_root=True)
+        spath = self._abs(path, allow_root=True)
         stack = [spath]
         while stack:
             cur = stack.pop()
@@ -243,7 +246,7 @@ class FileSystem(object):
         对调用方是"一次读完"的语义。
         """
 
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         out = bytearray()
         pos = int(offset or 0)
         remaining = None if length is None else int(length)
@@ -265,7 +268,7 @@ class FileSystem(object):
     def read_into(self, path, write_cb, offset=0):
         """流式读：每块调用 ``write_cb(bytes)``，返回总字节数。"""
 
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         pos = int(offset or 0)
         total = 0
         while True:
@@ -283,7 +286,7 @@ class FileSystem(object):
         return total
 
     def sha256(self, path):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         return self.chan.call("sha", path=spath).data.get("sha")
 
     # ------------------------------------------------------------------
@@ -294,7 +297,7 @@ class FileSystem(object):
 
         if isinstance(data, str):
             data = data.encode("utf-8")
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         if len(data) <= self.inline_limit:
             resp = self.chan.call(
                 "write_b64", path=spath,
@@ -311,7 +314,7 @@ class FileSystem(object):
         ``sandbox cp``（先落本地临时文件，不把整个文件读进内存）。
         """
 
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         buf = bytearray()
         tmp = None
         total = 0
@@ -369,7 +372,7 @@ class FileSystem(object):
 
         size = os.path.getsize(local_path)
         if size > 4 * 1024 * 1024:
-            self.tool.upload_many([(local_path, self._check(self.abspath(path)))])
+            self.tool.upload_many([(local_path, self._abs(path))])
             return size
         if size <= self.inline_limit:
             with open(local_path, "rb") as f:
@@ -382,7 +385,7 @@ class FileSystem(object):
 
         if isinstance(data, str):
             data = data.encode("utf-8")
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
 
         def gen():
             pos = 0
@@ -397,7 +400,7 @@ class FileSystem(object):
         return self.write_stream(spath, gen())
 
     def truncate(self, path, size=0):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         self.chan.call("truncate", path=spath, size=int(size))
         return size
 
@@ -405,14 +408,14 @@ class FileSystem(object):
     # 目录
     # ------------------------------------------------------------------
     def mkdir(self, path, mode=0o777):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         self.chan.call("mkdir", dirs=[[spath, mode]])
         return spath
 
     def makedirs(self, path, mode=0o777):
         """等价于 ``mkdir -p``：逐级创建。"""
 
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         missing = []
         cur = spath
         while cur.startswith(self.root) and cur != self.root:
@@ -429,23 +432,23 @@ class FileSystem(object):
         return spath
 
     def rmdir(self, path):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         self.chan.call("rmdir", paths=[spath])
 
     def remove(self, path):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         self.chan.call("unlink", paths=[spath])
 
     def unlink(self, path):
         self.remove(path)
 
     def rmtree(self, path):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         self.chan.call("rmtree", path=spath, timeout=600)
 
     def rename(self, src, dst):
-        sspath = self._check(self.abspath(src))
-        dspath = self._check(self.abspath(dst))
+        sspath = self._abs(src)
+        dspath = self._abs(dst)
         self.chan.call("rename", src=sspath, dst=dspath)
         return dspath
 
@@ -454,35 +457,35 @@ class FileSystem(object):
     def copy(self, src, dst):
         """沙箱内复制（服务端完成，不经过本机）。"""
 
-        sspath = self._check(self.abspath(src))
-        dspath = self._check(self.abspath(dst))
+        sspath = self._abs(src)
+        dspath = self._abs(dst)
         self.chan.call("copy_tree", src=sspath, dst=dspath, timeout=900)
         return dspath
 
     def symlink(self, target, linkpath):
-        lpath = self._check(self.abspath(linkpath))
+        lpath = self._abs(linkpath)
         self.chan.call("symlink", target=target, path=lpath)
         return lpath
 
     def link(self, src, dst):
-        sspath = self._check(self.abspath(src))
-        dspath = self._check(self.abspath(dst))
+        sspath = self._abs(src)
+        dspath = self._abs(dst)
         self.chan.call("link", src=sspath, dst=dspath)
         return dspath
 
     def chmod(self, path, mode):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         self.chan.call("chmod", path=spath, mode=int(mode))
 
     def utime(self, path, atime=None, mtime=None):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         self.chan.call("utime", path=spath, atime=atime, mtime=mtime)
 
     # ------------------------------------------------------------------
     # 本地 ← 沙箱
     # ------------------------------------------------------------------
     def download_to(self, path, local_path):
-        spath = self._check(self.abspath(path))
+        spath = self._abs(path)
         size = self.getsize(spath)
         if size > 4 * 1024 * 1024:
             self.tool.download_many([(spath, local_path)])
@@ -496,7 +499,7 @@ class FileSystem(object):
     def exec(self, cmd, cwd=None, env=None, timeout=None):
         """在沙箱里跑一条命令（内置 pty 之外的第二选择）。"""
 
-        return self.chan.exec(cmd, cwd=self._check(self.abspath(cwd), True) if cwd else self.cwd,
+        return self.chan.exec(cmd, cwd=self._abs(cwd, True) if cwd else self.cwd,
                               env=env, timeout=timeout)
 
     def ping(self):
@@ -508,7 +511,7 @@ class FileSystem(object):
     def push(self, local_path, remote_path):
         """本地文件或目录 → 沙箱（目录走 sandbox cp）。"""
 
-        rpath = self._check(self.abspath(remote_path), allow_root=True)
+        rpath = self._abs(remote_path, allow_root=True)
         if os.path.isdir(local_path):
             self.tool.upload_many([(local_path, rpath)])
             return rpath
@@ -517,7 +520,7 @@ class FileSystem(object):
     def pull(self, remote_path, local_path):
         """沙箱文件或目录 → 本地。"""
 
-        spath = self._check(self.abspath(remote_path), allow_root=True)
+        spath = self._abs(remote_path, allow_root=True)
         if self.isdir(spath):
             self.tool.download_many([(spath, local_path)])
             return local_path

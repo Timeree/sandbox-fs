@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 FTP 适配层：把沙箱文件系统挂到 pyftpdlib 上。
 
@@ -21,7 +20,6 @@ FTP 适配层：把沙箱文件系统挂到 pyftpdlib 上。
 * MLSD/LIST 的格式由沙箱返回的 stat 直接生成，保持 ``ls -l`` 风格。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import errno
 import os

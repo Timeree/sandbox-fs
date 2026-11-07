@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ``sandbox_fs ftp``：FTP 跑在**后台**，SSH 交互会话占**前台**。
 
@@ -10,7 +9,6 @@
 4. SSH 退出（或按 Ctrl-C）时，一并停掉后台 FTP。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import os
 import select

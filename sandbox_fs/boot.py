@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 沙箱内引导（体积敏感，只保留必要逻辑）。
 
@@ -11,11 +10,10 @@
    这两步谁先到都可以，循环里按需处理；
 4. ``exec`` 这份源码，交给 worker 的请求循环（之后一直复用这条连接）。
 
-注意：沙箱的输入通道依赖"进程持续有输出"，所以这里在等待期间保持 1 秒一次
-的心跳；worker 接棒后由它自己的应答提供输出。
+注意：沙箱的输入通道依赖"进程持续有输出"，所以这里在等待期间保持心跳
+（约 7 次/秒）；worker 接棒后由它自己的应答提供输出。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import json
 import os
@@ -143,15 +141,11 @@ def read_frame(fd, buf):
         return type_, flags, data, payload
 
 
-def frame_bytes(type_, data, payload=b"", flags=F_END):
+def write_frame(fd, type_, data, payload=b"", flags=F_END):
     data = dict(data)
     data["len"] = len(payload)
     head = json.dumps(data, separators=(",", ":")).encode("utf-8")
-    return HDR.pack(MAGIC, type_, flags, len(head)) + head + payload
-
-
-def write_frame(fd, type_, data, payload=b"", flags=F_END):
-    write_all(fd, frame_bytes(type_, data, payload, flags))
+    write_all(fd, HDR.pack(MAGIC, type_, flags, len(head)) + head + payload)
 
 
 # ---------------------------------------------------------------------------
@@ -237,4 +231,4 @@ def main(root=None):
         write_frame(1, T_RES, {"id": 0, "ok": 0, "errno": 5,
                                "msg": traceback.format_exc(limit=6)})
         return 4
-    return mod.run_fed(root, 0, 1, buf)
+    return mod.run_fed(0, 1, buf)

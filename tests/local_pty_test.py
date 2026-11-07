@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 本地快速测试台：用真实 pty 模拟沙箱的 stdio，验证 worker 状态机。
 
@@ -10,7 +9,6 @@
 任何协议/worker 改动都应先在这里跑绿。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import os
 import pty

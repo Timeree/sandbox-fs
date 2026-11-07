@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 沙箱内 worker：sandbox_fs-proto/1 的服务端。
 
@@ -9,7 +8,6 @@
 沙箱里由 :mod:`sandbox_fs.boot` 用 raw pty 提供，本地测试可以用 socket 或内存队列。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import base64
 import errno
@@ -425,8 +423,7 @@ UPLOAD_LOCK = threading.Lock()
 class Daemon(object):
     """持有连接与上传状态，把请求派发到对应操作。"""
 
-    def __init__(self, root):
-        self.root = root
+    def __init__(self):
         self.conn = None
 
     def on_attach(self, conn):
@@ -575,9 +572,6 @@ class Conn(object):
                 type_, _flags, data, payload = fr
                 op = data.get("op")
                 rid = data.get("id")
-                if op in ("detach", "shutdown"):
-                    self.res(rid, 1, pid=os.getpid())
-                    break
                 if type_ == T_DATA:
                     d.on_data(self, rid, data, payload)
                 elif op == "hello":
@@ -590,32 +584,23 @@ class Conn(object):
             d.on_detach()
 
 
-class Feeder(object):
-    """主线程读 pty，把帧投递给服务线程（避免两处同时读同一个 fd）。"""
-
-    def __init__(self):
-        import queue
-
-        self.q = queue.Queue()
-
-    def rd(self):
-        return self.q.get()
-
-def run_fed(root, fd_in=0, fd_out=1, buf=None):
+def run_fed(fd_in=0, fd_out=1, buf=None):
     """主线程读字节 → 队列；服务线程从队列取帧并处理。
 
     ！！！必须与 :func:`sandbox_fs.boot.main` 配合：boot 只负责 pump，
     解析与应答全部发生在服务线程。
     """
 
+    import queue
+
     boot = sys.modules.get("sandbox_fs_boot")
-    feeder = Feeder()
+    q = queue.Queue()
 
     def wr(blob):
         write_all(fd_out, blob)
 
-    daemon = Daemon(root)
-    conn = Conn(feeder.rd, wr, daemon)
+    daemon = Daemon()
+    conn = Conn(q.get, wr, daemon)
     threading.Thread(target=conn.serve, name="sandbox_fs-serve", daemon=True).start()
 
     buf = buf if buf is not None else bytearray()
@@ -623,5 +608,5 @@ def run_fed(root, fd_in=0, fd_out=1, buf=None):
         fr = boot.read_frame(fd_in, buf)
         if fr is None:
             break
-        feeder.q.put(fr)
+        q.put(fr)
     return 0

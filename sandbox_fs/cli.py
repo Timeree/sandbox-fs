@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 sandbox_fs 命令行入口。
 
@@ -13,7 +12,6 @@ sandbox_fs 命令行入口。
     python -m sandbox_fs stat /path               # 查看元信息
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import argparse
 import sys
@@ -21,12 +19,13 @@ import time
 
 from . import __version__, connect
 from .errors import SandboxFsError
+from .serve import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SANDBOX
 
 
 def _build_parser():
     ap = argparse.ArgumentParser(
         prog="sandbox_fs", description="Remote Sandbox 文件管理（FTP + 命令行）")
-    ap.add_argument("--sandbox", default="sandbox", help="沙箱名（默认 sandbox）")
+    ap.add_argument("--sandbox", default=DEFAULT_SANDBOX, help="沙箱名（默认 sandbox）")
     ap.add_argument("--root", default="auto",
                     help="挂载根目录；auto=连接前自动探测沙箱真实初始路径")
     ap.add_argument("--host", default=None, help="FTP 监听地址（默认 0.0.0.0）")
@@ -122,8 +121,8 @@ def main(argv=None):
     log = _make_logger(args.verbose)
 
     # host/port 可能在根级（无参模式）或 ftp 子命令传入，统一回填默认
-    args.host = args.host or "0.0.0.0"
-    args.port = args.port or 2121
+    args.host = args.host or DEFAULT_HOST
+    args.port = args.port or DEFAULT_PORT
 
     bare = args.cmd is None
 

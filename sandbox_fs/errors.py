@@ -1,7 +1,5 @@
-# -*- coding: utf-8 -*-
 """sandbox_fs 统一异常，以及到 POSIX errno 的映射。"""
 
-from __future__ import absolute_import, unicode_literals
 
 
 class SandboxFsError(Exception):

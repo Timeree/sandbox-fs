@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 传输层：一条 WebSocket 通道 + 沙箱内自举的 worker。
 
@@ -22,7 +21,6 @@
 worker 源码按需下载，避免把几十 KB 塞进命令行（沙箱解析 argv 很慢）。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import base64
 import collections

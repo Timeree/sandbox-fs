@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """sandbox_fs 帧协议（sandbox_fs-proto/1）。
 
 设计目标
@@ -22,7 +21,6 @@ worker 的生命周期与通道绑定：通道（及沙箱内进程）关闭时 
 应答返回宿主端，不在沙箱里落盘。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import json
 import struct

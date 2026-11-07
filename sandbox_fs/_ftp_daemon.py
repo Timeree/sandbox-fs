@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 ``sandbox_fs ftp`` 的后台服务进程。
 
@@ -12,13 +11,14 @@
 * 收到 SIGTERM 时关闭 FTP 并删除 pid 文件。
 """
 
-from __future__ import absolute_import, unicode_literals
 
 import argparse
 import os
 import signal
 import sys
 import time
+
+from .serve import DEFAULT_HOST, DEFAULT_PATH, DEFAULT_PORT, DEFAULT_SANDBOX
 
 
 def pidfile_path(port, tmpdir=None):
@@ -59,10 +59,10 @@ def read_pidfile(port):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="sandbox_fs._ftp_daemon")
-    ap.add_argument("--sandbox", default="sandbox")
-    ap.add_argument("--root", default="/workspace")
-    ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=2121)
+    ap.add_argument("--sandbox", default=DEFAULT_SANDBOX)
+    ap.add_argument("--root", default=DEFAULT_PATH)
+    ap.add_argument("--host", default=DEFAULT_HOST)
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--user", default=None, help="具名账号（默认匿名）")
     ap.add_argument("--password", default=None)
     ap.add_argument("--no-anonymous", action="store_true",
