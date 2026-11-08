@@ -171,6 +171,14 @@ class FileSystem(object):
             raise OSError(errno.EACCES, "outside of root %s" % self.root, norm)
         if norm == self.root and not allow_root:
             raise OSError(errno.EACCES, "operation on root not allowed", norm)
+        # 字符串前缀挡不住符号链接：root/link -> 外部目录时 norm 仍在 root 内。
+        # 宿主机与沙箱未必共享文件系统，这里只是纵深防御；真正的边界校验在
+        # worker.Daemon.on_request（服务端 open() 之前，基于 realpath）。
+        real = os.path.realpath(norm)
+        real_root = os.path.realpath(self.root)
+        if not (real == real_root or real.startswith(real_root.rstrip("/") + os.sep)):
+            raise OSError(errno.EACCES,
+                          "outside of root %s (symlink)" % self.root, norm)
         return norm
 
     # ------------------------------------------------------------------

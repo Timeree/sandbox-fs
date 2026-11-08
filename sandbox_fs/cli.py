@@ -115,6 +115,21 @@ def _resolve_root(args, log):
     return args.root
 
 
+def resolve_port(port):
+    """归一化端口：未指定用默认值；显式 0 明确报错而不是被 ``or`` 吞掉。
+
+    后台 daemon 按端口命名 pid/log 文件，端口 0（由 OS 随机分配）无法把
+    实际监听端口回传给前台，因此不受支持；静默改用 2121 更具误导性。
+    """
+
+    if port is None:
+        return DEFAULT_PORT
+    port = int(port)
+    if not 0 < port <= 65535:
+        raise ValueError("端口必须是 1-65535（收到 %d）；端口 0 不受支持" % port)
+    return port
+
+
 def main(argv=None):
     ap = _build_parser()
     args = ap.parse_args(argv)
@@ -122,7 +137,11 @@ def main(argv=None):
 
     # host/port 可能在根级（无参模式）或 ftp 子命令传入，统一回填默认
     args.host = args.host or DEFAULT_HOST
-    args.port = args.port or DEFAULT_PORT
+    try:
+        args.port = resolve_port(args.port)
+    except ValueError as exc:
+        sys.stderr.write("参数错误：%s\n" % exc)
+        return 2
 
     bare = args.cmd is None
 

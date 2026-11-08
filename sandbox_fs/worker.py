@@ -211,6 +211,7 @@ def op_upload_begin(conn, rid, req):
     fd = os.open(tmp, flags, mode)
     with UPLOAD_LOCK:
         UPLOADS[rid] = (fd, path, tmp, req.get("mode"))
+        UPLOAD_SEEN[rid] = time.time()
     return {"ready": 1, "path": path}
 
 
@@ -415,6 +416,61 @@ HANDLERS = {
 
 UPLOADS = {}
 UPLOAD_LOCK = threading.Lock()
+#: 上传状态的最长空闲时间；后台线程回收，避免客户端发了 upload_begin 后
+#: 既不发数据也不断连接时，fd 与 .sandbox_fs-tmp-* 临时文件永久驻留。
+UPLOAD_TTL = 300.0
+UPLOAD_SEEN = {}
+
+
+def in_root(path, root):
+    """路径是否落在 root 内（解析符号链接后判断）。
+
+    宿主机的 ``FileSystem._check`` 只做字符串规范化，看不到沙箱里的软链；
+    真正的 open() 在这里发生，必须由服务端自己校验，否则 ``root/link/x``
+    可以越出 root 读写。
+    """
+
+    if not root or root == "/":
+        return True
+    try:
+        real = os.path.realpath(path)
+        base = os.path.realpath(root)
+    except (OSError, ValueError):
+        return False
+    return real == base or real.startswith(base.rstrip("/") + os.sep)
+
+
+def reap_uploads(ttl=UPLOAD_TTL):
+    """回收超时未活动的上传：关闭 fd 并清理半成品临时文件。"""
+
+    now = time.time()
+    with UPLOAD_LOCK:
+        stale = [rid for rid, seen in UPLOAD_SEEN.items() if now - seen > ttl]
+        for rid in stale:
+            UPLOAD_SEEN.pop(rid, None)
+            entry = UPLOADS.pop(rid, None)
+            if entry is None:
+                continue
+            fd, _path, tmp, _mode = entry
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+
+def upload_reaper(stop, interval=30.0):
+    """后台清扫线程：只处理「发了 begin 就再无动静」的僵尸上传。"""
+
+    while not stop.wait(interval):
+        try:
+            reap_uploads()
+        except Exception:  # noqa: BLE001  清扫失败不能拖垮 worker
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -425,12 +481,15 @@ class Daemon(object):
 
     def __init__(self):
         self.conn = None
+        # 由 hello 帧带进来；为空表示不限制（本地测试台即如此）。
+        self.root = None
 
     def on_attach(self, conn):
         self.conn = conn
 
     def on_detach(self):
         with UPLOAD_LOCK:
+            UPLOAD_SEEN.clear()
             for rid, (fd, _p, tmp, _m) in list(UPLOADS.items()):
                 try:
                     os.close(fd)
@@ -445,11 +504,42 @@ class Daemon(object):
 
     # -- hello ------------------------------------------------------------
     def on_hello(self, conn, rid, data):
+        if data.get("root"):
+            self.root = data["root"]
         conn.res(rid, 1, pid=os.getpid(), proto=PROTO,
                  python=sys.version.split()[0])
 
     # -- 请求派发 ---------------------------------------------------------
+    @staticmethod
+    def _request_paths(data):
+        """取出一个请求里所有会被 open() / os.* 当成路径的字段。"""
+
+        paths = []
+        for key in ("path", "src", "dst"):
+            value = data.get(key)
+            if isinstance(value, str):
+                paths.append(value)
+        value = data.get("paths")
+        if isinstance(value, (list, tuple)):
+            paths.extend(p for p in value if isinstance(p, str))
+        value = data.get("dirs")
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, (list, tuple)) and item and isinstance(item[0], str):
+                    paths.append(item[0])
+                elif isinstance(item, str):
+                    paths.append(item)
+        return paths
+
     def on_request(self, conn, rid, op, data):
+        # 服务端边界校验：客户端的字符串前缀检查挡不住沙箱内的符号链接，
+        # 而这里才是真正 open() 的地方。root 未下发时（本地测试台）放行。
+        for path in self._request_paths(data):
+            if not in_root(path, self.root):
+                conn.res(rid, 0, errno=errno.EACCES,
+                         msg="outside of root %s (symlink)" % self.root,
+                         path=path)
+                return
         fn = HANDLERS.get(op)
         if fn is None:
             conn.res(rid, 0, errno=errno.EINVAL, msg="unknown op %r" % (op,))
@@ -476,6 +566,8 @@ class Daemon(object):
     def on_data(self, conn, rid, data, payload):
         with UPLOAD_LOCK:
             entry = UPLOADS.get(rid)
+            if entry is not None:
+                UPLOAD_SEEN[rid] = time.time()
         if entry is None:
             conn.res(rid, 0, errno=errno.EBADF,
                      msg="upload not started (rid=%s)" % rid)
@@ -497,12 +589,14 @@ class Daemon(object):
                     os.replace(tmp, path)
                 with UPLOAD_LOCK:
                     UPLOADS.pop(rid, None)
+                    UPLOAD_SEEN.pop(rid, None)
                 st = os.stat(path)
                 conn.res(rid, 1, written=1, path=path,
                          size=st.st_size, mtime=int(st.st_mtime))
         except OSError as exc:
             with UPLOAD_LOCK:
                 UPLOADS.pop(rid, None)
+                UPLOAD_SEEN.pop(rid, None)
             try:
                 os.close(fd)
             except OSError:
@@ -603,10 +697,30 @@ def run_fed(fd_in=0, fd_out=1, buf=None):
     conn = Conn(q.get, wr, daemon)
     threading.Thread(target=conn.serve, name="sandbox_fs-serve", daemon=True).start()
 
+    # 回收「发了 upload_begin 就再无动静」的僵尸上传；daemon 线程随进程退出。
+    stop = threading.Event()
+    threading.Thread(target=upload_reaper, args=(stop,),
+                     name="sandbox_fs-reaper", daemon=True).start()
+
     buf = buf if buf is not None else bytearray()
-    while True:
-        fr = boot.read_frame(fd_in, buf)
-        if fr is None:
-            break
-        q.put(fr)
+    errors = 0
+    try:
+        while True:
+            try:
+                fr = boot.read_frame(fd_in, buf)
+            except (ValueError, TypeError, OSError) as exc:
+                # 解析层已尽量自愈；这里兜底，绝不因为一条坏帧让 worker
+                # 进程直接退出（连在途请求一起报废）。
+                del buf[:]
+                errors += 1
+                if (errors > 1000 or (isinstance(exc, OSError)
+                                      and exc.errno in (errno.EBADF, errno.EIO))):
+                    break
+                continue
+            errors = 0
+            if fr is None:
+                break
+            q.put(fr)
+    finally:
+        stop.set()
     return 0

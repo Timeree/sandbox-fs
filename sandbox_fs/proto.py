@@ -54,7 +54,20 @@ class Header(object):
         return bool(self.flags & F_END)
 
     def payload_len(self):
-        return int(self.data.get("len", 0) or 0)
+        """返回载荷长度；非法值返回 ``-1``（调用方据此丢弃坏帧并重对齐）。
+
+        这里绝不能抛异常：``transport._pump`` 会吞掉 ``ValueError``，于是
+        一条 ``{"len": "oops"}`` 的损坏帧就等于掐断整条连接。
+        """
+
+        value = self.data.get("len", 0)
+        # 只接受协议本身会写出的 int；bool / 字符串 / None 一律视为坏帧，
+        # 避免 int("10") 之类把伪造值悄悄解释成合法长度。
+        if isinstance(value, bool) or not isinstance(value, int):
+            return -1
+        if value < 0 or value > MAX_PAYLOAD:
+            return -1
+        return value
 
 
 def encode_frame(type, data, payload=b"", flags=0):
@@ -88,12 +101,16 @@ class Decoder(object):
                 break
             magic, type_, flags, hlen = HDR.unpack_from(self.buf, 0)
             if magic != MAGIC or hlen > MAX_HEADER:
-                # 脏数据：丢掉一个字节重新对齐，而不是整个连接作废。
-                # 注意 hlen 超大时同样只能丢字节重对齐——不能 raise：
-                # _pump 会吞掉 ValueError，一条损坏帧就等于掐断整条连接
-                # （与 boot.read_frame 的处理保持一致）。
-                drop = self.buf.find(MAGIC)
-                self.buf = self.buf[1:] if drop <= 0 else self.buf[drop:]
+                # 脏数据：跳到下一个候选帧头重新对齐，而不是整个连接作废。
+                # 不能 raise：_pump 会吞掉 ValueError，一条损坏帧就等于掐断
+                # 整条连接（与 boot.read_frame 的处理保持一致）。
+                drop = self.buf.find(MAGIC, 1)
+                if drop < 0:
+                    # 没有任何候选帧头：整体丢弃，避免逐字节扫描 O(n^2)，
+                    # 也避免垃圾字节在缓冲区里无界堆积。
+                    del self.buf[:]
+                    break
+                del self.buf[:drop]
                 continue
             if len(self.buf) < HDR.size + hlen:
                 break
@@ -101,9 +118,21 @@ class Decoder(object):
             try:
                 data = json.loads(raw.decode("utf-8"))
             except ValueError:
-                data = {}
+                # 坏 JSON 头：帧头与头部长度是确定的，只丢这 10+hlen 字节，
+                # 后面可能已经到达的合法帧必须保留；也不能 raise。
+                del self.buf[:HDR.size + hlen]
+                continue
+            if not isinstance(data, dict):
+                del self.buf[:HDR.size + hlen]
+                continue
             hmsg = Header(type_, flags, data)
             need = hmsg.payload_len()
+            if need < 0:
+                # 载荷长度非法（非整数 / 负数 / 超上限）：帧边界不可信。
+                # 连同帧头一起丢弃缓冲区里尚未确认的字节，避免残留数据被
+                # 重新对齐成伪造帧；也防止无界长度把缓冲区撑爆。
+                del self.buf[:]
+                continue
             total = HDR.size + hlen + need
             if len(self.buf) < total:
                 break

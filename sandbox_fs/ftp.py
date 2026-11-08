@@ -494,6 +494,13 @@ def make_handler(fs, user=None, password=None, anonymous=True):
     # SandboxAbstractedFS.ftp2fs() 负责（它把 FTP 视角映射到沙箱）。
     placeholder = _local_placeholder()
 
+    if not anonymous and not user:
+        # 没人能登录的"就绪"服务比启动失败更糟：前台会打印就绪，用户却
+        # 一直连不上。这里在绑定端口之前就明确拒绝。
+        raise RuntimeError(
+            "已关闭匿名访问（--no-anonymous），但未通过 --user 指定账号；"
+            "拒绝启动一个没有任何可登录账号的 FTP 服务")
+
     authorizer = DummyAuthorizer()
     perm = "elradfmwMT"   # 全权限：读、写、删除、改名、建目录……
     if anonymous:

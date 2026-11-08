@@ -88,8 +88,9 @@ def write_all(fd, blob):
 def read_frame(fd, buf):
     """从 fd 读一帧；返回 (type, flags, data, payload)，EOF 返回 None。
 
-    坏帧（JSON 解析失败、len 越界）视为脏数据跳过并继续对齐，
-    不会中断读循环——只有 EOF（通道关闭）才返回 None。
+    坏帧（JSON 解析失败、len 非法）一律跳过并继续对齐，绝不中断读循环——
+    只有 EOF（通道关闭）才返回 None。此时载荷边界已不可信，因此连同缓冲区
+    里尚未确认的字节一起丢弃，避免脏数据被重新对齐成伪造请求。
     """
 
     def need(n):
@@ -113,6 +114,13 @@ def read_frame(fd, buf):
         del buf[:n]
         return out
 
+    def drop_bad():
+        # 帧头已消费但载荷长度未知/非法：残留字节若继续参与对齐，攻击者
+        # 可以在脏数据里塞一个合法帧头，把它注入成一条请求。因此丢弃全部
+        # 未确认字节再重读；绝不 raise（run_fed 的读循环没有 try 包裹，
+        # 抛异常会直接打崩 worker）。
+        del buf[:]
+
     # 对齐帧头：脏数据只丢 1 个字节并保留其余，用循环而不是递归，
     # 否则一次读到几十 KB 垃圾数据就会递归爆栈。
     while True:
@@ -129,10 +137,18 @@ def read_frame(fd, buf):
         try:
             data = json.loads(raw.decode("utf-8"))
         except ValueError:
-            continue          # 坏头：跳过整帧继续对齐
-        plen = int(data.get("len", 0) or 0)
-        if plen < 0 or plen > MAX_PAYLOAD:
-            continue          # 载荷长度非法：跳过整帧
+            drop_bad()
+            continue
+        if not isinstance(data, dict):
+            drop_bad()
+            continue
+        # 与 proto.Header.payload_len() 保持同一套规则：只接受 [0, MAX_PAYLOAD]
+        # 内的整数。裸 int() 会让 {"len":"oops"} 抛 ValueError 打崩 worker。
+        plen = data.get("len", 0)
+        if (isinstance(plen, bool) or not isinstance(plen, int)
+                or plen < 0 or plen > MAX_PAYLOAD):
+            drop_bad()
+            continue
         payload = b""
         if plen:
             payload = need(plen)

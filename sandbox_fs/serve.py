@@ -46,11 +46,26 @@ class BackgroundFTP(object):
         self.log_path = None
         self.reused = False
 
-    @staticmethod
-    def _existing_pid(port):
-        """端口上已有存活的 sandbox_fs FTP 就返回它的 pid。"""
+    def _expected_config(self):
+        """本次启动的完整配置，写入 pid 文件供复用时比对。"""
 
-        from ._ftp_daemon import read_pidfile
+        return {
+            "sandbox": self.sandbox,
+            "root": self.workdir,
+            "host": self.host,
+            "port": self.port,
+            "user": self.user or "",
+            "anonymous": bool(self.anonymous),
+        }
+
+    def _existing_pid(self, port):
+        """端口上有存活、且**启动配置完全一致**的 FTP 时返回它的 pid。
+
+        只看端口是不够的：同一个端口上跑着的可能是另一个沙箱 / 根目录 /
+        账号的实例，直接复用会把本次的全部新参数静默丢弃。
+        """
+
+        from ._ftp_daemon import read_pidfile, read_pidinfo
 
         pid = read_pidfile(port)
         if not pid:
@@ -60,9 +75,24 @@ class BackgroundFTP(object):
             import socket
 
             with socket.create_connection(("127.0.0.1", port), timeout=1.5):
-                return pid
+                pass
         except OSError:
             return None
+        if read_pidinfo(port) != self._expected_config():
+            return None
+        return pid
+
+    def _conflict(self, port):
+        """端口上有一个配置不一致的存活实例时，返回给用户的说明。"""
+
+        from ._ftp_daemon import read_pidfile
+
+        pid = read_pidfile(port)
+        if not pid:
+            return None
+        return ("端口 %d 已有 sandbox_fs FTP（pid %s），但启动配置与本次请求"
+                "不一致；已拒绝复用，以免新配置被静默丢弃。请先停止旧实例"
+                "（kill %s）或换用其它端口。" % (port, pid, pid))
 
     def start(self, timeout=90):
         """启动并等待就绪；成功返回 pid，失败抛异常。
@@ -77,8 +107,21 @@ class BackgroundFTP(object):
             self.reused = True
             self.log_path = os.path.join(os.path.dirname(pidfile_path(self.port)),
                                          "sandbox_fs-ftp-%d.log" % self.port)
-            self.log("端口 %d 已有 FTP 在运行（pid %s），直接复用" % (self.port, existing))
+            self.log("端口 %d 已有 FTP 在运行（pid %s），且配置一致，直接复用"
+                     % (self.port, existing))
             return existing
+
+        # 端口上确有实例，但配置不同（或 pid 文件是旧格式、无从确认）：
+        # 明确报错，绝不静默丢弃本次的 sandbox/root/账号等新参数。
+        conflict = self._conflict(self.port)
+        if conflict:
+            raise RuntimeError(conflict)
+        if not self.anonymous and not self.user:
+            raise RuntimeError(
+                "已关闭匿名访问（--no-anonymous）但未通过 --user 指定账号，"
+                "服务将没有任何可登录账号；已拒绝启动")
+        if not self.port:
+            raise RuntimeError("端口 0 不受支持（后台实例按端口命名 pid/log 文件）")
 
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         read_fd, write_fd = os.pipe()
@@ -180,24 +223,57 @@ class SshForeground(object):
                 return [path]
         raise RuntimeError("找不到 sandbox CLI（npm i -g sandbox）")
 
-    def _kill_stale(self):
-        """清掉上次残留的 sandbox ssh 会话。"""
+    @staticmethod
+    def _cmdline(pid):
+        """读 /proc/<pid>/cmdline（Linux）；拿不到就返回 None。"""
 
         try:
-            out = subprocess.run(["pgrep", "-f", "bin/sandbox ssh "],
-                                 capture_output=True, timeout=10)
-        except (OSError, subprocess.SubprocessError):
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                raw = f.read()
+        except OSError:
+            return None
+        return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+    def _kill_stale(self):
+        """只清掉**本用户、本沙箱**残留的 ssh 会话，绝不误杀无关进程。
+
+        原来的 ``pgrep -f "bin/sandbox ssh "`` 会匹配所有用户、所有沙箱
+        的 ssh 进程并全部 SIGTERM。这里限定 uid，再逐个精确核对 argv。
+        """
+
+        try:
+            cli = self._cli()[0]
+        except RuntimeError:
             return
-        for line in out.stdout.decode().split():
+        get_uid = getattr(os, "getuid", None)
+        cmd = ["pgrep", "-f"]
+        if get_uid is not None:
+            cmd += ["-u", str(get_uid())]
+        cmd += ["bin/sandbox ssh "]
+        try:
+            out = subprocess.run(cmd, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError, AttributeError):
+            return
+        for line in out.stdout.decode("utf-8", "replace").split():
             try:
                 pid = int(line)
             except ValueError:
                 continue
-            if pid != os.getpid():
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except OSError:
-                    pass
+            if pid == os.getpid():
+                continue
+            argv = self._cmdline(pid)
+            if not argv or len(argv) < 3:
+                continue
+            try:
+                same_cli = os.path.realpath(argv[0]) == os.path.realpath(cli)
+            except OSError:
+                same_cli = False
+            if not (same_cli and argv[1] == "ssh" and argv[2] == self.sandbox):
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
 
     def run(self):
         """前台运行，返回退出码。"""
@@ -277,7 +353,16 @@ def run_ftp(sandbox=DEFAULT_SANDBOX, workdir=DEFAULT_PATH, host=DEFAULT_HOST,
         return 1
 
     log("FTP 已在后台运行" + ("（复用现有实例）" if bg.reused else ""))
-    log("  地址：ftp://%s:%d   （匿名，无需账号密码，全权限）" % (host, port))
+    # 日志必须与实际配置一致：--no-anonymous + --user 下再说"匿名无需密码"
+    # 会直接误导正在排障的用户。
+    if anonymous and user:
+        auth_desc = "匿名或账号 %s" % user
+    elif anonymous:
+        auth_desc = "匿名（无需账号密码）"
+    else:
+        auth_desc = "账号 %s（已关闭匿名）" % user
+    log("  地址：ftp://%s:%d   （%s，全权限 elradfmwMT）"
+        % (host, port, auth_desc))
     log("  根目录：%s" % workdir)
     log("  进程：pid %s   日志：%s" % (pid, bg.log_path))
     log("  停止：kill %s" % pid)

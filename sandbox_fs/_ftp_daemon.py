@@ -35,14 +35,41 @@ def pidfile_path(port, tmpdir=None):
     return os.path.join(base, "sandbox_fs-ftp-%d.pid" % int(port))
 
 
+def write_pidfile(port, pid, config=None):
+    """写 pid 文件，同时记录启动配置供同端口复用时比对。"""
+
+    import json
+
+    payload = {"pid": int(pid)}
+    if config is not None:
+        payload["config"] = {k: config[k] for k in
+                             ("sandbox", "root", "host", "port", "user", "anonymous")
+                             if k in config}
+    try:
+        with open(pidfile_path(port), "w") as f:
+            f.write(json.dumps(payload, ensure_ascii=False))
+    except OSError:
+        pass
+
+
 def read_pidfile(port):
-    """返回正在运行的后台 FTP 的 pid（没有则 None）。"""
+    """返回正在运行的后台 FTP 的 pid（没有则 None）。
+
+    兼容旧版纯数字 pid 文件；新版是 ``{"pid": ..., "config": {...}}``。
+    """
+
+    import json
 
     path = pidfile_path(port)
     try:
         with open(path) as f:
-            pid = int(f.read().strip() or 0)
-    except (OSError, ValueError):
+            raw = f.read().strip()
+        try:
+            obj = json.loads(raw)
+            pid = int(obj.get("pid") or 0)
+        except (ValueError, AttributeError, TypeError):
+            pid = int(raw or 0)
+    except (OSError, ValueError, TypeError):
         return None
     if pid <= 0:
         return None
@@ -55,6 +82,22 @@ def read_pidfile(port):
             pass
         return None
     return pid
+
+
+def read_pidinfo(port):
+    """读取 pid 文件里记录的启动配置（旧版纯 pid 文件返回 None）。"""
+
+    import json
+
+    try:
+        with open(pidfile_path(port)) as f:
+            obj = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    cfg = obj.get("config")
+    return cfg if isinstance(cfg, dict) else None
 
 
 def main(argv=None):
@@ -109,11 +152,14 @@ def main(argv=None):
         if isinstance(server, tuple):
             server, _thread = server
         pid = os.getpid()
-        try:
-            with open(pidfile_path(args.port), "w") as f:
-                f.write("%d\n" % pid)
-        except OSError:
-            pass
+        write_pidfile(args.port, pid, {
+            "sandbox": args.sandbox,
+            "root": args.root,
+            "host": args.host,
+            "port": args.port,
+            "user": args.user or "",
+            "anonymous": not args.no_anonymous,
+        })
         say("FTP 已就绪 ftp://%s:%d (pid %d, 根 %s)"
             % (args.host, args.port, pid, fs.root))
         report("%d" % pid, ok=True)

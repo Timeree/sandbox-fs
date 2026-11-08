@@ -59,9 +59,14 @@ class Response(object):
         self.ok = True
         self.event.set()
 
-    def _finish_err(self, errno_, msg):
+    def _finish_err(self, errno_, msg, data=None):
         self.errno = errno_
         self.msg = msg
+        # 服务端错误帧里常带 path / src / target，保存下来 wait() 才能把
+        # 路径放进 RemoteError，排障信息不至于丢失。
+        if data:
+            self.data.update({k: v for k, v in data.items()
+                              if k not in ("id", "len")})
         self.ok = False
         self.event.set()
 
@@ -541,14 +546,22 @@ class Channel(object):
         return resp.wait(timeout or self.request_timeout)
 
     def send_data(self, rid, chunk, eof=False):
-        """上传流：同一 rid 的 DATA 帧必须按序发送。"""
+        """上传流：同一 rid 的 DATA 帧必须按序发送。
 
-        head = {"op": "write_data", "id": rid}
-        if eof:
-            head["eof"] = True
-        for part in _split(chunk):
+        ``eof`` / ``F_END`` 只能标在**最后一片**上：每片都标会让 worker
+        在第一片就 os.replace 收尾并注销 rid，后续片报 EBADF，文件被
+        静默截断。
+        """
+
+        parts = list(_split(chunk))
+        last = len(parts) - 1
+        for i, part in enumerate(parts):
+            final = eof and i == last
+            head = {"op": "write_data", "id": rid}
+            if final:
+                head["eof"] = True
             self._write(proto.encode_frame(proto.T_DATA, head, part,
-                                          proto.F_END if eof else 0))
+                                          proto.F_END if final else 0))
 
     def _dispatch(self, hdr, payload):
         rid = hdr.data.get("id")
@@ -562,10 +575,12 @@ class Channel(object):
             return
         if t == proto.T_DATA:
             resp.body += payload
+            # 元数据（path/size/mtime/ino/offset）由 worker.Conn.stream 放在
+            # 首帧，而 END 在最后一帧；每帧都合并才不会在 >96KB 时全丢。
+            for k, v in hdr.data.items():
+                if k not in ("id", "len"):
+                    resp.data[k] = v
             if hdr.end:
-                for k, v in hdr.data.items():
-                    if k not in ("id", "len"):
-                        resp.data[k] = v
                 with self._lock:
                     self._pending.pop(rid, None)
                 resp._finish_ok(resp.data)
@@ -580,7 +595,13 @@ class Channel(object):
             if data.get("ok"):
                 resp._finish_ok(data)
             else:
-                resp._finish_err(int(data.get("errno") or 0), data.get("msg") or "")
+                # 容错 int()：_dispatch 跑在 _pump 的 try 里，任何 ValueError
+                # 都会被吞掉并掐断整条连接。
+                try:
+                    code = int(data.get("errno") or 0)
+                except (TypeError, ValueError):
+                    code = errno.EIO
+                resp._finish_err(code, str(data.get("msg") or ""), data)
 
     def _fail_all_pending(self, why):
         with self._lock:
